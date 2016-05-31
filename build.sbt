@@ -6,6 +6,8 @@ name := "sbt-concat"
 
 scalaVersion := "2.10.6"
 
+scalacOptions += "-feature"
+
 addSbtPlugin("com.typesafe.sbt" %% "sbt-web" % "1.4.0")
 
 scriptedSettings
