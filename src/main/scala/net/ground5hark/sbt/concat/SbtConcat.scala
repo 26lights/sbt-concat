@@ -5,6 +5,7 @@ import com.typesafe.sbt.web.{PathMapping, SbtWeb}
 import sbt.Keys._
 import sbt._
 import com.typesafe.sbt.web.pipeline.Pipeline
+import com.typesafe.sbt.web.incremental._
 import collection.mutable
 import mutable.ListBuffer
 import java.io.File
@@ -70,38 +71,51 @@ object SbtConcat extends AutoPlugin {
     keepSources := false
   )
 
+  case class ConcatOperation(group: ConcatGroup, sources: Seq[PathMapping]) {
+    def writeConcat(targetPath: File, log: Logger): PathMapping = {
+      val targetFile = targetPath / group.name
+
+      IO.touch(targetFile)
+
+      val outputStream = new FileOutputStream(targetFile)
+      val writer = new OutputStreamWriter(outputStream, IO.utf8)
+
+      sources.foreach { source =>
+        group.comments.foreach{ comment =>
+          writer.write(comment(source._2))
+          writer.flush()
+        }
+        IO.transfer(source._1, outputStream)
+      }
+
+      outputStream.close()
+      log.info(s"${sources.length} files added to $targetFile")
+
+      targetFile -> group.name
+    }
+
+  }
+
   private def concatFiles: Def.Initialize[Task[Pipeline.Stage]] = Def.task { mappings: Seq[PathMapping] =>
     var usedMappings = Set.empty[PathMapping]
     val targetPath = (webTarget in concat).value
     val log = streams.value.log
 
     val filteredMappings = mappings.filter{ case(file, name) => !(excludeFilter in (Assets, concat)).value.accept(file) }
-    val generated: TraversableOnce[PathMapping] = groups.value.map { group =>
-      var counter = 0
-      val targetFile = targetPath / group.name
-      IO.touch(targetFile)
-      val outputStream = new FileOutputStream(targetFile)
-      val writer = new OutputStreamWriter(outputStream, IO.utf8)
-
+    val operations = groups.value.map { group =>
+      var sources = Seq[PathMapping]()
       group.sources.foreach { source =>
         filteredMappings.foreach { mapping =>
           if(source.filter(mapping._1, mapping._2)) {
-            group.comments.foreach{ comment =>
-              writer.write(comment(mapping._2))
-              writer.flush()
-            }
-            IO.transfer(mapping._1, outputStream)
+            sources :+= mapping
             usedMappings += mapping
-            counter += 1
           }
         }
-
       }
-      outputStream.close()
-      log.info(s"$counter files added to $targetFile")
-      (targetFile -> group.name)
+      ConcatOperation(group, sources)
     }
 
+    val generated = operations.map { _.writeConcat(targetPath, log) }
     val result = if(keepSources.value) mappings else mappings.filterNot(usedMappings.contains)
 
     result ++ generated
