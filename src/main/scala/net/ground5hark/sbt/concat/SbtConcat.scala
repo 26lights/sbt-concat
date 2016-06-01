@@ -17,13 +17,13 @@ sealed trait ConcatSource {
   def filter(file: File, path: String): Boolean
 }
 
-class ConcatSourceString(p: String) extends ConcatSource {
+case class ConcatSourceString(p: String) extends ConcatSource {
   val relPath = p.replace('\\', File.separatorChar).replace('/', File.separatorChar)
 
   def filter(file: File, path: String): Boolean = path == relPath
 }
 
-class ConcatSourcePathFinder(pathFinder: PathFinder) extends ConcatSource {
+case class ConcatSourcePathFinder(pathFinder: PathFinder) extends ConcatSource {
   lazy val files = Set(pathFinder.get :_*)
 
   def filter(file: File, path: String): Boolean = files.contains(file)
@@ -71,9 +71,10 @@ object SbtConcat extends AutoPlugin {
     keepSources := false
   )
 
-  case class ConcatOperation(group: ConcatGroup, sources: Seq[PathMapping]) {
-    def writeConcat(targetPath: File, log: Logger): PathMapping = {
-      val targetFile = targetPath / group.name
+  case class ConcatOperation(targetPath: File, group: ConcatGroup, sources: Seq[PathMapping]) {
+    val targetFile = targetPath / group.name
+
+    def writeConcat(log: Logger): OpResult = {
 
       IO.touch(targetFile)
 
@@ -91,9 +92,11 @@ object SbtConcat extends AutoPlugin {
       outputStream.close()
       log.info(s"${sources.length} files added to $targetFile")
 
-      targetFile -> group.name
+      OpSuccess(sourceList.toSet, Set(targetFile))
     }
 
+    def sourceList = sources.map(_._1)
+    def generated = targetFile -> group.name
   }
 
   private def concatFiles: Def.Initialize[Task[Pipeline.Stage]] = Def.task { mappings: Seq[PathMapping] =>
@@ -112,10 +115,17 @@ object SbtConcat extends AutoPlugin {
           }
         }
       }
-      ConcatOperation(group, sources)
+      ConcatOperation(targetPath, group, sources)
     }
 
-    val generated = operations.map { _.writeConcat(targetPath, log) }
+    syncIncremental(streams.value.cacheDirectory / "concat", operations) { toRun =>
+      val result = toRun.map { operation =>
+        operation -> operation.writeConcat(log)
+      }.toMap
+      result -> Unit
+    }
+
+    val generated = operations.map(_.generated)
     val result = if(keepSources.value) mappings else mappings.filterNot(usedMappings.contains)
 
     result ++ generated
