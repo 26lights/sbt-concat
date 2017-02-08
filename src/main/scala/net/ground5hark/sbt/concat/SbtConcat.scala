@@ -1,38 +1,47 @@
 package net.ground5hark.sbt.concat
 
-import scala.language.implicitConversions
-import com.typesafe.sbt.web.{PathMapping, SbtWeb}
 import sbt.Keys._
 import sbt._
+
+import com.typesafe.sbt.web.{PathMapping, SbtWeb}
 import com.typesafe.sbt.web.pipeline.Pipeline
 import com.typesafe.sbt.web.incremental._
+
 import collection.mutable
 import mutable.ListBuffer
+
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.io.OutputStreamWriter
 
+import scala.language.implicitConversions
+
 sealed trait ConcatSource {
-  def filter(file: File, path: String): Boolean
+  def filter(file: File, relativePath: String): Boolean
 }
 
-case class ConcatSourceString(p: String) extends ConcatSource {
-  val relPath = p.replace('\\', File.separatorChar).replace('/', File.separatorChar)
+case class ConcatSourceString(relativePath: String) extends ConcatSource {
+  val normalizedRelativePath = 
+    relativePath
+      .replace('\\', File.separatorChar)
+      .replace('/', File.separatorChar)
 
-  def filter(file: File, path: String): Boolean = path == relPath
+  def filter(file: File, relativePath: String): Boolean = {
+    relativePath == normalizedRelativePath
+  }
 }
 
 case class ConcatSourcePathFinder(pathFinder: PathFinder) extends ConcatSource {
   lazy val files = Set(pathFinder.get :_*)
 
-  def filter(file: File, path: String): Boolean = files.contains(file)
+  def filter(file: File, relativePath: String): Boolean = files.contains(file)
 }
 
 case class ConcatGroup(name: String, sources: Seq[ConcatSource], comments: Option[String => String] = Some(ConcatGroup.cLikeComments)) {
   def from(sources: ConcatSource*) = this.copy(sources = sources)
   def commentedBy(f: String => String): ConcatGroup = this.copy(comments = Some(f))
-  def noCommented = this.copy(comments=None)
+  def noCommented = this.copy(comments = None)
 }
 object ConcatGroup{
   val cLikeComments = (fileName: String) => s"\n/** $fileName **/\n"
@@ -81,21 +90,21 @@ object SbtConcat extends AutoPlugin {
       val outputStream = new FileOutputStream(targetFile)
       val writer = new OutputStreamWriter(outputStream, IO.utf8)
 
-      sources.foreach { source =>
+      sources.foreach { case (file, relativePath)=>
         group.comments.foreach{ comment =>
-          writer.write(comment(source._2))
+          writer.write(comment(relativePath))
           writer.flush()
         }
-        IO.transfer(source._1, outputStream)
+        IO.transfer(file, outputStream)
       }
 
       outputStream.close()
       log.info(s"${sources.length} files added to $targetFile")
 
-      OpSuccess(sourceList.toSet, Set(targetFile))
+      OpSuccess(sourceFiles.toSet, Set(targetFile))
     }
 
-    def sourceList = sources.map(_._1)
+    def sourceFiles = sources.map{case (file, _) => file }
     def generated = targetFile -> group.name
   }
 
@@ -104,12 +113,15 @@ object SbtConcat extends AutoPlugin {
     val targetPath = (webTarget in concat).value
     val log = streams.value.log
 
-    val filteredMappings = mappings.filter{ case(file, name) => !(excludeFilter in (Assets, concat)).value.accept(file) }
+    val filteredMappings = mappings.filter{ 
+      case(file, name) => !(excludeFilter in (Assets, concat)).value.accept(file) 
+    }
+
     val operations = groups.value.map { group =>
       var sources = Seq[PathMapping]()
       group.sources.foreach { source =>
-        filteredMappings.foreach { mapping =>
-          if(source.filter(mapping._1, mapping._2)) {
+        filteredMappings.foreach { case mapping @ (file, relativePath) =>
+          if(source.filter(file, relativePath)) {
             sources :+= mapping
             usedMappings += mapping
           }
