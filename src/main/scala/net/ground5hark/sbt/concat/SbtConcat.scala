@@ -41,7 +41,7 @@ case class ConcatSourcePathFinder(pathFinder: PathFinder) extends ConcatSource {
 case class ConcatGroup(name: String, sources: Seq[ConcatSource], comments: Option[String => String] = Some(ConcatGroup.cLikeComments)) {
   def from(sources: ConcatSource*) = this.copy(sources = sources)
   def commentedBy(f: String => String): ConcatGroup = this.copy(comments = Some(f))
-  def noCommented = this.copy(comments = None)
+  def notCommented = this.copy(comments = None)
 }
 object ConcatGroup{
   val cLikeComments = (fileName: String) => s"\n/** $fileName **/\n"
